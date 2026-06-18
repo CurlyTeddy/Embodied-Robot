@@ -67,7 +67,6 @@ class PixelClassification(nn.Module):
 
 
 def main():
-    mlflow.autolog()
     hparams = {
         "resize_size": 256,
         "batch_size": 64,
