@@ -1,7 +1,7 @@
 from PIL import Image
 from pathlib import Path
 from typing import Callable
-from torchmetrics import Accuracy
+from torchmetrics import F1Score
 from transformers import AutoModel
 from torchinfo import summary
 from torch import nn
@@ -31,7 +31,8 @@ class ADE20K_Nav(Dataset):
         self.labels = sorted(list(label_path.glob("*.png")), key=lambda p: p.name)
 
         object_info = pd.read_csv(Path(data_dir) / "objectInfo150.txt", sep="\t", engine="python")
-        self.navigable_indexes = list(object_info.index[object_info["Name"].isin(navigable_object)] + 1)
+        contain_navigable = object_info["Name"].apply(lambda names: bool(set(names.split(', ')) & navigable_object))
+        self.navigable_indexes = list(object_info.index[contain_navigable] + 1)
 
         self.image_transform = image_transform
         self.mask_transform = mask_transform
@@ -115,15 +116,18 @@ def main():
     head = PixelClassification(patch_size=model.config.patch_size, hidden_size=model.config.hidden_size).to(device)
     loss_fn = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.SGD(head.parameters(), hparams["learning_rate"])
-    train_accuracy = Accuracy(task="binary").to(device)
-    validation_accuracy = Accuracy(task="binary").to(device)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.03, total_iters=1500)
 
-    mlflow.set_experiment("ade20k-segmentation")
-    with mlflow.start_run(run_name="dinov3-conv-head", tags={"model": "dinov3", "dataset": "ade20k"}):
+    train_score = F1Score(task="binary").to(device)
+    validation_score = F1Score(task="binary").to(device)
+
+    mlflow.set_experiment("segmentation-conv-head")
+    with mlflow.start_run(run_name="linear-lr", tags={"dataset": "ade20k"}):
         mlflow.log_params(hparams)
         # train the head with the loaded dataset
         for e in range(hparams["epoch"]):
-            print(f"---------- epoch {e} ----------")
+            print(f"---------- epoch {e + 1} ----------")
+            head.train()
             for i, (image, mask) in enumerate(train_loader):
                 image = image.to(device, non_blocking=True)
                 mask = mask.to(device, non_blocking=True)
@@ -134,12 +138,13 @@ def main():
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
 
-                mlflow.log_metric("train_loss", loss.item(), i)
+                mlflow.log_metric("train_loss", loss.item(), e * len(train_loader) + i)
                 print(f"Train loss {loss.item():>7f}, [{i + 1}/{len(train_loader)}]")
-                train_accuracy.update(logits, mask)
+                train_score.update(logits, mask.int())
 
-
+            model.eval()
             head.eval()
             with torch.inference_mode():
                 for i, (image, mask) in enumerate(validation_loader):
@@ -147,16 +152,16 @@ def main():
                     mask = mask.to(device, non_blocking=True)
                     logits = head(model(image).last_hidden_state[:, 5:])
                     loss = loss_fn(logits, mask)
-                    mlflow.log_metric("validation_loss", loss.item(), i)
+                    mlflow.log_metric("validation_loss", loss.item(), e * len(validation_loader) + i)
 
                     print(f"Validation loss {loss.item():>7f}, [{i + 1}/{len(validation_loader)}]")
-                    validation_accuracy.update(logits, mask)
+                    validation_score.update(logits, mask.int())
 
-            mlflow.log_metrics({"train_accuracy": train_accuracy.compute(), "validation_accuracy": validation_accuracy.compute()})
-            train_accuracy.reset()
-            validation_accuracy.reset()
+            mlflow.log_metrics({"train_score": train_score.compute(), "validation_score": validation_score.compute()}, e)
+            train_score.reset()
+            validation_score.reset()
 
-    mlflow_pytorch.log_model(head, name="dinov3-semseg-convhead", tags={"model": "dinov3", "task": "semseg", "dataset": "ade20k"})
+    mlflow_pytorch.log_model(head, name="dinov3-semseg-convhead", tags={"backbone": "dinov3", "task": "sem-seg", "dataset": "ade20k"})
 
 if __name__ == "__main__":
     main()
