@@ -72,7 +72,11 @@ def main():
         "resize_size": 256,
         "batch_size": 64,
         "epoch": 5,
-        "learning_rate": 0.01
+        "learning_rate": 0.01,
+        "pos_weight": 9.0,
+        "lr_start_factor": 1.0,
+        "lr_end_factor": 0.03,
+        "span": 1500
     }
 
     image_transform = v2.Compose([
@@ -116,7 +120,10 @@ def main():
     head = PixelClassification(patch_size=model.config.patch_size, hidden_size=model.config.hidden_size).to(device)
     loss_fn = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.SGD(head.parameters(), hparams["learning_rate"])
-    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.03, total_iters=1500)
+    scheduler = torch.optim.lr_scheduler.LinearLR(optimizer,
+                                                  start_factor=hparams["lr_start_factor"],
+                                                  end_factor=hparams["lr_end_factor"],
+                                                  total_iters=hparams["span"])
 
     train_score = F1Score(task="binary").to(device)
     validation_score = F1Score(task="binary").to(device)
