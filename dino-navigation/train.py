@@ -107,7 +107,7 @@ def main():
 
     mask_transform = v2.Compose([
         v2.ToImage(),
-        v2.Resize((hparams["resize_size"], hparams["resize_size"]), antialias=False),
+        v2.Resize((hparams["resize_size"], hparams["resize_size"]), interpolation=v2.InterpolationMode.NEAREST_EXACT, antialias=False),
     ])
 
     navigable_object = {"floor", "flooring", "sidewalk",
