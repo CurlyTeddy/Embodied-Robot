@@ -67,6 +67,22 @@ class PixelClassification(nn.Module):
         return self.seq_layers(dense_feature)
 
 
+class DiceWithLogitsLoss(nn.Module):
+    def __init__(self, eps: float=1e-6):
+        # epsilon for numerical stability
+        super().__init__()
+        self.eps = eps
+    
+    def forward(self, predict: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
+        predict = predict.sigmoid()
+        label = label.float()
+        dims = (1, 2, 3)
+        true_positive = (predict * label).sum(dim=dims)
+        dice = (2 * true_positive + self.eps) / (predict.sum(dim=dims) + label.sum(dim=dims) + self.eps)
+        
+        return 1 - dice.mean()
+
+
 def main():
     hparams = {
         "resize_size": 256,
@@ -118,7 +134,10 @@ def main():
 
     # add model head
     head = PixelClassification(patch_size=model.config.patch_size, hidden_size=model.config.hidden_size).to(device)
-    loss_fn = nn.BCEWithLogitsLoss()
+    # weighted bce loss is optimized to make each pixel's probability correct, with extra weight on positives
+    bce_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([hparams["pos_weight"]], device=device))
+    # dice loss is optimized to make the predicted navigable region overlap the true navigable region
+    dice_fn = DiceWithLogitsLoss()
     optimizer = torch.optim.SGD(head.parameters(), hparams["learning_rate"])
     scheduler = torch.optim.lr_scheduler.LinearLR(optimizer,
                                                   start_factor=hparams["lr_start_factor"],
@@ -129,7 +148,7 @@ def main():
     validation_score = F1Score(task="binary").to(device)
 
     mlflow.set_experiment("segmentation-conv-head")
-    with mlflow.start_run(run_name="linear-lr", tags={"dataset": "ade20k"}):
+    with mlflow.start_run(run_name="bce-dice-loss", tags={"dataset": "ade20k", "head": "pointwise-conv"}):
         mlflow.log_params(hparams)
         # train the head with the loaded dataset
         for e in range(hparams["epoch"]):
@@ -140,7 +159,7 @@ def main():
                 mask = mask.to(device, non_blocking=True)
                 # skip class and register tokens
                 logits = head(model(image).last_hidden_state[:, 5:])
-                loss = loss_fn(logits, mask)
+                loss = bce_fn(logits, mask) + dice_fn(logits, mask)
 
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -158,7 +177,7 @@ def main():
                     image = image.to(device, non_blocking=True)
                     mask = mask.to(device, non_blocking=True)
                     logits = head(model(image).last_hidden_state[:, 5:])
-                    loss = loss_fn(logits, mask)
+                    loss = bce_fn(logits, mask) + dice_fn(logits, mask)
                     mlflow.log_metric("validation_loss", loss.item(), e * len(validation_loader) + i)
 
                     print(f"Validation loss {loss.item():>7f}, [{i + 1}/{len(validation_loader)}]")
