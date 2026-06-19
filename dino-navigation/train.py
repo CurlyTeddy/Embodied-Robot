@@ -1,6 +1,6 @@
 from PIL import Image
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 from torchmetrics import F1Score
 from transformers import AutoModel
 from torchinfo import summary
@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import v2
 
 
+import copy
 import mlflow
 import mlflow.pytorch as mlflow_pytorch
 import os
@@ -83,16 +84,52 @@ class DiceWithLogitsLoss(nn.Module):
         return 1 - dice.mean()
 
 
+class EarlyStop:
+    def __init__(self,
+                 model: nn.Module,
+                 patient: int,
+                 min_delta: float,
+                 mode: Literal["min", "max"],
+                 restore_best_model: bool = True):
+        self.model = model
+        self.patient = patient
+        self.min_delta = min_delta
+        self.mode = mode
+        self.restore = restore_best_model
+
+        self.attempts = 0
+        self.best_metric = float("inf") if mode == "min" else float("-inf")
+        self.best_weights = copy.deepcopy(model.state_dict())
+    
+    def stop(self, metric: float) -> bool:
+        threshold = self.best_metric + self.min_delta
+        if self.mode == "max" and metric < threshold or self.mode == "min" and metric > threshold:
+            self.attempts += 1
+        else:
+            self.best_metric = metric
+            self.best_weights = copy.deepcopy(self.model.state_dict())
+
+        if self.attempts <= self.patient:
+            return False
+
+        if self.restore:
+            self.model.load_state_dict(self.best_weights)
+            
+        return True
+
+
 def main():
     hparams = {
         "resize_size": 256,
         "batch_size": 64,
-        "epoch": 5,
+        "epoch": 20,
         "learning_rate": 0.01,
         "pos_weight": 9.0,
         "lr_start_factor": 1.0,
         "lr_end_factor": 0.03,
-        "span": 1500
+        "span": 1500,
+        "patient": 3,
+        "min_delta": 0.01,
     }
 
     image_transform = v2.Compose([
@@ -143,16 +180,21 @@ def main():
                                                   start_factor=hparams["lr_start_factor"],
                                                   end_factor=hparams["lr_end_factor"],
                                                   total_iters=hparams["span"])
+    early_stop = EarlyStop(head, hparams["patient"], hparams["min_delta"], "max")
 
     train_score = F1Score(task="binary").to(device)
     validation_score = F1Score(task="binary").to(device)
 
     mlflow.set_experiment("segmentation-conv-head")
-    with mlflow.start_run(run_name="bce-dice-loss", tags={"dataset": "ade20k", "head": "pointwise-conv"}):
+    with mlflow.start_run(run_name="early-stop", tags={"dataset": "ade20k", "head": "pointwise-conv"}):
         mlflow.log_params(hparams)
         # train the head with the loaded dataset
-        for e in range(hparams["epoch"]):
+        e = 0
+        while e < hparams["epoch"] and not early_stop.stop(validation_score.compute()):
             print(f"---------- epoch {e + 1} ----------")
+            train_score.reset()
+            validation_score.reset()
+
             head.train()
             for i, (image, mask) in enumerate(train_loader):
                 image = image.to(device, non_blocking=True)
@@ -184,8 +226,7 @@ def main():
                     validation_score.update(logits, mask.int())
 
             mlflow.log_metrics({"train_score": train_score.compute(), "validation_score": validation_score.compute()}, e)
-            train_score.reset()
-            validation_score.reset()
+            e += 1
 
     mlflow_pytorch.log_model(head, name="dinov3-semseg-convhead", tags={"backbone": "dinov3", "task": "sem-seg", "dataset": "ade20k"})
 
