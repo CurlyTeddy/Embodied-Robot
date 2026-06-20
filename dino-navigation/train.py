@@ -108,6 +108,7 @@ class EarlyStop:
         else:
             self.best_metric = metric
             self.best_weights = copy.deepcopy(self.model.state_dict())
+            self.attempts = 0
 
         if self.attempts <= self.patient:
             return False
