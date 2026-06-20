@@ -88,12 +88,12 @@ class EarlyStop:
     def __init__(self,
                  model: nn.Module,
                  patient: int,
-                 min_delta: float,
+                 delta: float,
                  mode: Literal["min", "max"],
                  restore_best_model: bool = True):
         self.model = model
         self.patient = patient
-        self.min_delta = min_delta
+        self.delta = delta
         self.mode = mode
         self.restore = restore_best_model
 
@@ -102,7 +102,7 @@ class EarlyStop:
         self.best_weights = copy.deepcopy(model.state_dict())
     
     def stop(self, metric: float) -> bool:
-        threshold = self.best_metric + self.min_delta
+        threshold = self.best_metric + self.delta
         if self.mode == "max" and metric < threshold or self.mode == "min" and metric > threshold:
             self.attempts += 1
         else:
@@ -110,7 +110,7 @@ class EarlyStop:
             self.best_weights = copy.deepcopy(self.model.state_dict())
             self.attempts = 0
 
-        if self.attempts <= self.patient:
+        if self.attempts < self.patient:
             return False
 
         if self.restore:
