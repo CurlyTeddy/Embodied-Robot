@@ -26,7 +26,6 @@ class ADE20K_Nav(Dataset):
     def __init__(self,
                  data_dir: str,
                  split: str,
-                 navigable_object: set[str],
                  image_transform: Callable[[Image.Image], torch.Tensor],
                  mask_transform: Callable[[Image.Image], torch.Tensor]) -> None:
         image_path = Path(data_dir) / "images" / split
@@ -36,6 +35,12 @@ class ADE20K_Nav(Dataset):
         self.labels = sorted(list(label_path.glob("*.png")), key=lambda p: p.name)
 
         object_info = pd.read_csv(Path(data_dir) / "objectInfo150.txt", sep="\t", engine="python")
+        navigable_object = {"floor", "flooring", "sidewalk",
+                            "pavement", "earth", "ground",
+                            "path", "step", "stair",
+                            "rug", "carpet", "carpeting",
+                            "stairway", "staircase", "stairs",
+                            "steps"}
         contain_navigable = object_info["Name"].apply(lambda names: bool(set(names.split(', ')) & navigable_object))
         self.navigable_indexes = list(object_info.index[contain_navigable] + 1)
 
@@ -256,16 +261,9 @@ def main():
             v2.Resize((hparams["resize_size"], hparams["resize_size"]), interpolation=v2.InterpolationMode.NEAREST_EXACT, antialias=False),
         ])
 
-        navigable_object = {"floor", "flooring", "sidewalk",
-                            "pavement", "earth", "ground",
-                            "path", "step", "stair",
-                            "rug", "carpet", "carpeting",
-                            "stairway", "staircase", "stairs",
-                            "steps"}
-
         # load dataset
-        train_dataset = ADE20K_Nav("data/ADEChallengeData2016", "training", navigable_object, image_transform, mask_transform)
-        validation_dataset = ADE20K_Nav("data/ADEChallengeData2016", "validation", navigable_object, image_transform, mask_transform)
+        train_dataset = ADE20K_Nav("data/ADEChallengeData2016", "training", image_transform, mask_transform)
+        validation_dataset = ADE20K_Nav("data/ADEChallengeData2016", "validation", image_transform, mask_transform)
 
         # create DataLoaders
         train_loader = DataLoader(train_dataset, hparams["batch_size"], shuffle=True, num_workers=os.cpu_count() or 1, pin_memory=True)
