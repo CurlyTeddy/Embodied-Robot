@@ -1,6 +1,5 @@
-from dataclasses import dataclass
-
 from PIL import Image
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 from torchmetrics import F1Score
@@ -9,6 +8,7 @@ from transformers import AutoModel
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import v2
+from transform import get_transforms
 
 
 import argparse
@@ -246,20 +246,7 @@ def main():
                 "train_seed": train_seed,
             }
 
-        image_transform = v2.Compose([
-            v2.ToImage(),
-            v2.Resize((hparams["resize_size"], hparams["resize_size"]), antialias=True),   # antialias help smoothen images
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(
-                mean=(0.485, 0.456, 0.406),
-                std=(0.229, 0.224, 0.225),
-            )
-        ])
-
-        mask_transform = v2.Compose([
-            v2.ToImage(),
-            v2.Resize((hparams["resize_size"], hparams["resize_size"]), interpolation=v2.InterpolationMode.NEAREST_EXACT, antialias=False),
-        ])
+        image_transform, mask_transform = get_transforms(hparams["resize_size"])
 
         # load dataset
         train_dataset = ADE20K_Nav("data/ADEChallengeData2016", "training", image_transform, mask_transform)
